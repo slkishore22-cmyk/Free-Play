@@ -1,8 +1,10 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 import requests
 import re
 
 app = Flask(__name__)
+CORS(app)
 
 def extract_playlist_id(url):
     match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
