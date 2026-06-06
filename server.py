@@ -152,6 +152,89 @@ def scrape_spotify_playlist(playlist_url):
     except Exception as e:
         return None, str(e)
 
+def fetch_playlist_with_keys(playlist_id, client_id, client_secret):
+    try:
+        # Get access token
+        auth_url = "https://accounts.spotify.com/api/token"
+        auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        res = requests.post(auth_url, headers={
+            "Authorization": f"Basic {auth_header}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }, data={"grant_type": "client_credentials"}, timeout=10)
+        
+        if res.status_code != 200:
+            return None, f"Failed to authenticate with Spotify API: HTTP {res.status_code} - {res.text}"
+            
+        access_token = res.json().get("access_token")
+        if not access_token:
+            return None, "Failed to retrieve access token from response"
+            
+        # Fetch playlist metadata
+        playlist_url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+        res = requests.get(playlist_url, headers={
+            "Authorization": f"Bearer {access_token}"
+        }, timeout=10)
+        
+        if res.status_code != 200:
+            return None, f"Failed to fetch playlist metadata: HTTP {res.status_code} - {res.text}"
+            
+        playlist_data = res.json()
+        name = playlist_data.get("name", "Imported Playlist")
+        description = playlist_data.get("description", "")
+        
+        cover = ""
+        images = playlist_data.get("images", [])
+        if images:
+            cover = images[0].get("url", "")
+            
+        # Fetch all tracks (with pagination)
+        tracks = []
+        tracks_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=100"
+        
+        while tracks_url:
+            res = requests.get(tracks_url, headers={
+                "Authorization": f"Bearer {access_token}"
+            }, timeout=10)
+            
+            if res.status_code != 200:
+                break
+                
+            data = res.json()
+            items = data.get("items", [])
+            for item in items:
+                t = item.get("track")
+                if not t:
+                    continue
+                # Extract track details
+                track_id = t.get("id", "")
+                track_name = t.get("name", "")
+                artists = [a.get("name", "") for a in t.get("artists", [])]
+                artist_name = ", ".join(artists)
+                
+                track_cover = cover
+                album = t.get("album", {})
+                if album and album.get("images"):
+                    track_cover = album.get("images")[0].get("url", "")
+                    
+                tracks.append({
+                    "id": track_id,
+                    "name": track_name,
+                    "artist": artist_name,
+                    "image": track_cover,
+                    "album": album.get("name", "")
+                })
+                
+            tracks_url = data.get("next")
+            
+        return {
+            "name": name,
+            "description": description,
+            "cover": cover,
+            "tracks": tracks
+        }, None
+    except Exception as e:
+        return None, str(e)
+
 @app.route('/')
 def index():
     return jsonify({"service": "FreePlay Spotify Scraper", "status": "running"})
@@ -187,15 +270,40 @@ def get_playlist():
     if not playlist_id:
         return jsonify({"success": False, "error": "Invalid playlist URL"}), 400
     
-    result, error = scrape_spotify_playlist(url)
+    client_id = request.headers.get('x-spotify-client-id', '').strip()
+    client_secret = request.headers.get('x-spotify-client-secret', '').strip()
     
+    result = None
+    error = None
+    
+    if client_id and client_secret:
+        print(f"Using official Spotify API for playlist {playlist_id}")
+        result, error = fetch_playlist_with_keys(playlist_id, client_id, client_secret)
+    else:
+        print(f"Using scraping fallback for playlist {playlist_id}")
+        result, error = scrape_spotify_playlist(url)
+        
     if error or not result:
         return jsonify({"success": False, "error": error or "Could not fetch playlist"}), 500
         
     # Concurrently resolve JioSaavn audio streams
+    # Capped at first 100 tracks to prevent timeouts
     tracks = result['tracks']
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        resolved_tracks = list(executor.map(resolve_jiosaavn_track, tracks))
+    tracks_to_resolve = tracks[:100]
+    tracks_remaining = tracks[100:]
+    
+    resolved_tracks = []
+    if tracks_to_resolve:
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            resolved_tracks = list(executor.map(resolve_jiosaavn_track, tracks_to_resolve))
+            
+    # For tracks beyond 100, set default unresolved fields
+    for t in tracks_remaining:
+        t['streamUrl'] = None
+        t['durationMs'] = 0
+        if 'album' not in t:
+            t['album'] = ''
+        resolved_tracks.append(t)
     
     return jsonify({
         "success": True,
