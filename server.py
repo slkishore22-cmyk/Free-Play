@@ -160,6 +160,21 @@ def index():
 def health():
     return jsonify({"status": "ok"})
 
+@app.route('/resolve', methods=['GET'])
+def resolve_track():
+    name = request.args.get('name', '').strip()
+    artist = request.args.get('artist', '').strip()
+    if not name:
+        return jsonify({"success": False, "error": "Missing name parameter"}), 400
+        
+    track = {'name': name, 'artist': artist}
+    resolved = resolve_jiosaavn_track(track)
+    
+    return jsonify({
+        "success": True,
+        "track": resolved
+    })
+
 @app.route('/playlist', methods=['GET'])
 def get_playlist():
     url = request.args.get('url', '').strip()
