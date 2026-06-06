@@ -19,53 +19,71 @@ def extract_playlist_id(url):
 
 def scrape_spotify_playlist(playlist_url):
     try:
-        response = requests.get(playlist_url, headers=HEADERS, timeout=15)
+        playlist_id = extract_playlist_id(playlist_url)
+        
+        # Use Spotify embed API - returns JSON directly
+        embed_url = f"https://open.spotify.com/oembed?url=spotify:playlist:{playlist_id}"
+        
+        # Try Spotify's internal embed page which has track data
+        page_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Referer": "https://open.spotify.com/",
+        }
+        
+        response = requests.get(page_url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
+        
         tracks = []
         
-        # Method 1: JSON-LD
-        json_ld = soup.find('script', type='application/ld+json')
-        if json_ld:
-            try:
-                data = json.loads(json_ld.string)
-                if 'track' in data:
-                    for track in data['track']:
-                        name = track.get('name', '')
-                        artist = ''
-                        if 'byArtist' in track:
-                            a = track['byArtist']
-                            artist = a[0].get('name','') if isinstance(a,list) else a.get('name','')
-                        if name:
-                            tracks.append({'name': name, 'artist': artist, 'image': track.get('image','')})
-            except:
-                pass
-        
-        # Method 2: Next.js data
-        if not tracks:
-            next_data = soup.find('script', id='__NEXT_DATA__')
-            if next_data:
+        # Extract from script tags containing track data
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and 'trackList' in str(script.string):
                 try:
-                    data = json.loads(next_data.string)
-                    items = data['props']['pageProps']['state']['data']['entity']['trackList']
-                    for item in items:
-                        tracks.append({
-                            'name': item.get('title',''),
-                            'artist': item.get('subtitle',''),
-                            'image': item.get('image','')
-                        })
+                    # Find JSON data in script
+                    text = script.string
+                    start = text.find('{')
+                    end = text.rfind('}') + 1
+                    if start != -1:
+                        data = json.loads(text[start:end])
+                        # Navigate to trackList
+                        track_list = data.get('trackList', [])
+                        for track in track_list:
+                            tracks.append({
+                                'name': track.get('title', ''),
+                                'artist': track.get('subtitle', ''),
+                                'image': track.get('image', '')
+                            })
                 except:
                     pass
-
-        # Method 3: og:description meta tag parsing
+            
+            # Also check for initialState or props
+            if script.string and ('initialState' in str(script.string) or 'Spotify.Entity' in str(script.string)):
+                try:
+                    text = script.string
+                    # Extract JSON
+                    match = re.search(r'Spotify\.Entity\s*=\s*({.*?});', text, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        items = data.get('tracks', {}).get('items', [])
+                        for item in items:
+                            track = item.get('track', {})
+                            tracks.append({
+                                'name': track.get('name', ''),
+                                'artist': track.get('artists', [{}])[0].get('name', ''),
+                                'image': track.get('album', {}).get('images', [{}])[0].get('url', '')
+                            })
+                except:
+                    pass
+        
         if not tracks:
-            desc = soup.find('meta', property='og:description')
-            if desc:
-                return None, "Playlist is private or Spotify blocked scraping"
-
-        if not tracks:
-            return None, "Could not extract tracks"
+            return None, "Could not extract tracks from embed page"
             
         return tracks, None
+        
     except Exception as e:
         return None, str(e)
 
