@@ -10,48 +10,63 @@ def extract_playlist_id(url):
         return match.group(1)
     return None
 
-def get_playlist_tracks(playlist_id):
-    tracks = []
-    offset = 0
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "origin": "https://spotifydown.com",
-        "referer": "https://spotifydown.com/",
-    }
-    
-    while True:
-        try:
-            url = f"https://api.spotifydown.com/trackList/playlist/{playlist_id}?offset={offset}"
-            response = requests.get(url, headers=headers, timeout=10)
-            data = response.json()
+def scrape_spotify_playlist(playlist_url):
+    try:
+        playlist_id = extract_playlist_id(playlist_url)
+        if not playlist_id:
+            return None, "Invalid playlist ID"
             
-            if not data.get('success'):
-                break
-                
-            items = data.get('trackList', [])
-            if not items:
-                break
-                
-            for item in items:
-                tracks.append({
-                    'name': item.get('title', ''),
-                    'artist': item.get('artists', ''),
-                    'image': item.get('cover', ''),
-                    'id': item.get('id', '')
-                })
+        embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://open.spotify.com/"
+        }
+        
+        response = requests.get(embed_url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None, f"Failed to load embed page: {response.status_code}"
             
-            # Check if more pages
-            next_offset = data.get('nextOffset', None)
-            if not next_offset:
-                break
-            offset = next_offset
+        from bs4 import BeautifulSoup
+        import json
+        soup = BeautifulSoup(response.text, 'html.parser')
+        next_data_script = soup.find('script', id='__NEXT_DATA__')
+        
+        if not next_data_script:
+            return None, "__NEXT_DATA__ script not found in embed response"
             
-        except Exception as e:
-            print(f"Error at offset {offset}: {e}")
-            break
-    
-    return tracks
+        data = json.loads(next_data_script.string)
+        state = data.get('props', {}).get('pageProps', {}).get('state', {})
+        entity = state.get('data', {}).get('entity', {})
+        
+        if not entity:
+            return None, "Playlist entity not found in page state"
+            
+        playlist_name = entity.get('name') or entity.get('title') or 'Imported Playlist'
+        playlist_desc = entity.get('subtitle') or ''
+        playlist_cover = entity.get('coverArt', {}).get('sources', [{}])[0].get('url', '')
+        raw_tracks = entity.get('trackList', [])
+        
+        tracks = []
+        for item in raw_tracks:
+            track_id = item.get('uri', '').split(':')[-1] if item.get('uri') else ''
+            tracks.append({
+                'name': item.get('title', ''),
+                'artist': item.get('subtitle', ''),
+                'image': playlist_cover,
+                'id': track_id
+            })
+            
+        return {
+            'tracks': tracks,
+            'name': playlist_name,
+            'description': playlist_desc,
+            'cover': playlist_cover
+        }, None
+        
+    except Exception as e:
+        return None, str(e)
 
 @app.route('/')
 def index():
@@ -73,16 +88,19 @@ def get_playlist():
     if not playlist_id:
         return jsonify({"success": False, "error": "Invalid playlist URL"}), 400
     
-    tracks = get_playlist_tracks(playlist_id)
+    result, error = scrape_spotify_playlist(url)
     
-    if not tracks:
-        return jsonify({"success": False, "error": "Could not fetch playlist"}), 500
+    if error or not result:
+        return jsonify({"success": False, "error": error or "Could not fetch playlist"}), 500
     
     return jsonify({
         "success": True,
         "playlist_id": playlist_id,
-        "total_tracks": len(tracks),
-        "tracks": tracks
+        "name": result['name'],
+        "description": result['description'],
+        "cover": result['cover'],
+        "total_tracks": len(result['tracks']),
+        "tracks": result['tracks']
     })
 
 if __name__ == '__main__':
