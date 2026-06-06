@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 import re
+import os
 from bs4 import BeautifulSoup
 import json
 from Crypto.Cipher import DES
@@ -10,6 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app)
+
+# Read Spotify API credentials from environment variables (set on Railway)
+ENV_SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID', '').strip()
+ENV_SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET', '').strip()
 
 def extract_playlist_id(url):
     match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
@@ -96,7 +101,132 @@ def resolve_jiosaavn_track(track):
     track['album'] = ''
     return track
 
+def scrape_spotify_embed_token(playlist_id):
+    """
+    Scrape the Spotify embed page to extract the accessToken,
+    then use Spotify's internal pathfinder API to fetch all tracks.
+    This works for playlists of any size without needing developer credentials.
+    """
+    try:
+        embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://open.spotify.com/"
+        }
+        
+        response = requests.get(embed_url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None, f"Failed to load embed page: {response.status_code}"
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        next_data_script = soup.find('script', id='__NEXT_DATA__')
+        
+        if not next_data_script:
+            return None, "__NEXT_DATA__ script not found"
+        
+        data = json.loads(next_data_script.string)
+        
+        # Extract the accessToken from the session data
+        access_token = data.get('props', {}).get('pageProps', {}).get('state', {}).get('session', {}).get('accessToken', '')
+        
+        if not access_token:
+            return None, "No accessToken found in embed page"
+        
+        print(f"Got embed accessToken for playlist {playlist_id}")
+        
+        # Now use the token to fetch playlist data from Spotify's internal API
+        api_url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+        api_headers = {
+            "Authorization": f"Bearer {access_token}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        res = requests.get(api_url, headers=api_headers, timeout=10)
+        if res.status_code != 200:
+            return None, f"Spotify API returned {res.status_code} with embed token"
+        
+        playlist_data = res.json()
+        name = playlist_data.get("name", "Imported Playlist")
+        description = playlist_data.get("description", "")
+        
+        cover = ""
+        images = playlist_data.get("images", [])
+        if images:
+            cover = images[0].get("url", "")
+        
+        # Paginate through all tracks
+        tracks = []
+        tracks_data = playlist_data.get("tracks", {})
+        items = tracks_data.get("items", [])
+        
+        for item in items:
+            t = item.get("track")
+            if not t or t.get("type") != "track":
+                continue
+            track_id = t.get("id", "")
+            track_name = t.get("name", "")
+            artists = [a.get("name", "") for a in t.get("artists", [])]
+            artist_name = ", ".join(artists)
+            
+            track_cover = cover
+            album = t.get("album", {})
+            if album and album.get("images"):
+                track_cover = album.get("images")[0].get("url", "")
+            
+            tracks.append({
+                "id": track_id,
+                "name": track_name,
+                "artist": artist_name,
+                "image": track_cover,
+                "album": album.get("name", "") if album else ""
+            })
+        
+        # Follow pagination
+        next_url = tracks_data.get("next")
+        while next_url:
+            res = requests.get(next_url, headers=api_headers, timeout=10)
+            if res.status_code != 200:
+                break
+            page_data = res.json()
+            for item in page_data.get("items", []):
+                t = item.get("track")
+                if not t or t.get("type") != "track":
+                    continue
+                track_id = t.get("id", "")
+                track_name = t.get("name", "")
+                artists = [a.get("name", "") for a in t.get("artists", [])]
+                artist_name = ", ".join(artists)
+                
+                track_cover = cover
+                album = t.get("album", {})
+                if album and album.get("images"):
+                    track_cover = album.get("images")[0].get("url", "")
+                
+                tracks.append({
+                    "id": track_id,
+                    "name": track_name,
+                    "artist": artist_name,
+                    "image": track_cover,
+                    "album": album.get("name", "") if album else ""
+                })
+            next_url = page_data.get("next")
+        
+        print(f"Fetched {len(tracks)} tracks using embed token for playlist {playlist_id}")
+        
+        return {
+            "name": name,
+            "description": description,
+            "cover": cover,
+            "tracks": tracks
+        }, None
+        
+    except Exception as e:
+        return None, str(e)
+
 def scrape_spotify_playlist(playlist_url):
+    """Original scraper using __NEXT_DATA__ entity - works for small playlists only."""
     try:
         playlist_id = extract_playlist_id(playlist_url)
         if not playlist_id:
@@ -131,6 +261,9 @@ def scrape_spotify_playlist(playlist_url):
         playlist_desc = entity.get('subtitle') or ''
         playlist_cover = entity.get('coverArt', {}).get('sources', [{}])[0].get('url', '')
         raw_tracks = entity.get('trackList', [])
+        
+        if not raw_tracks:
+            return None, "No tracks found in embed entity"
         
         tracks = []
         for item in raw_tracks:
@@ -270,34 +403,53 @@ def get_playlist():
     if not playlist_id:
         return jsonify({"success": False, "error": "Invalid playlist URL"}), 400
     
+    # Priority 1: Client-provided credentials
     client_id = request.headers.get('x-spotify-client-id', '').strip()
     client_secret = request.headers.get('x-spotify-client-secret', '').strip()
+    
+    # Priority 2: Server-side environment variable credentials
+    if not client_id or not client_secret:
+        client_id = ENV_SPOTIFY_CLIENT_ID
+        client_secret = ENV_SPOTIFY_CLIENT_SECRET
     
     result = None
     error = None
     
+    # Strategy 1: Official Spotify API (if we have credentials)
     if client_id and client_secret:
-        print(f"Using official Spotify API for playlist {playlist_id}")
+        print(f"[Strategy 1] Using official Spotify API for playlist {playlist_id}")
         result, error = fetch_playlist_with_keys(playlist_id, client_id, client_secret)
-    else:
-        print(f"Using scraping fallback for playlist {playlist_id}")
+        if result:
+            error = None  # Clear any previous error
+    
+    # Strategy 2: Embed page accessToken scrape (works for any size playlist)
+    if not result:
+        print(f"[Strategy 2] Using embed token scrape for playlist {playlist_id}")
+        result, error = scrape_spotify_embed_token(playlist_id)
+        if result:
+            error = None
+    
+    # Strategy 3: Classic embed __NEXT_DATA__ scrape (only works for small playlists)
+    if not result:
+        print(f"[Strategy 3] Using classic embed scrape for playlist {playlist_id}")
         result, error = scrape_spotify_playlist(url)
         
     if error or not result:
         return jsonify({"success": False, "error": error or "Could not fetch playlist"}), 500
         
     # Concurrently resolve JioSaavn audio streams
-    # Capped at first 100 tracks to prevent timeouts
+    # Capped at first 50 tracks to prevent timeouts on Railway
     tracks = result['tracks']
-    tracks_to_resolve = tracks[:100]
-    tracks_remaining = tracks[100:]
+    RESOLVE_CAP = 50
+    tracks_to_resolve = tracks[:RESOLVE_CAP]
+    tracks_remaining = tracks[RESOLVE_CAP:]
     
     resolved_tracks = []
     if tracks_to_resolve:
         with ThreadPoolExecutor(max_workers=20) as executor:
             resolved_tracks = list(executor.map(resolve_jiosaavn_track, tracks_to_resolve))
             
-    # For tracks beyond 100, set default unresolved fields
+    # For tracks beyond cap, set default unresolved fields
     for t in tracks_remaining:
         t['streamUrl'] = None
         t['durationMs'] = 0
@@ -312,6 +464,7 @@ def get_playlist():
         "description": result['description'],
         "cover": result['cover'],
         "total_tracks": len(resolved_tracks),
+        "resolved_count": len([t for t in resolved_tracks if t.get('streamUrl')]),
         "tracks": resolved_tracks
     })
 
