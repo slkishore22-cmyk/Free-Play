@@ -9,7 +9,6 @@ app = Flask(__name__)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
 }
 
 def extract_playlist_id(url):
@@ -20,11 +19,11 @@ def extract_playlist_id(url):
 
 def scrape_spotify_playlist(playlist_url):
     try:
-        response = requests.get(playlist_url, headers=HEADERS, timeout=10)
-        if response.status_code != 200:
-            return None, f"Failed to fetch: {response.status_code}"
+        response = requests.get(playlist_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         tracks = []
+        
+        # Method 1: JSON-LD
         json_ld = soup.find('script', type='application/ld+json')
         if json_ld:
             try:
@@ -34,23 +33,38 @@ def scrape_spotify_playlist(playlist_url):
                         name = track.get('name', '')
                         artist = ''
                         if 'byArtist' in track:
-                            artist_data = track['byArtist']
-                            if isinstance(artist_data, list):
-                                artist = artist_data[0].get('name', '')
-                            elif isinstance(artist_data, dict):
-                                artist = artist_data.get('name', '')
+                            a = track['byArtist']
+                            artist = a[0].get('name','') if isinstance(a,list) else a.get('name','')
                         if name:
-                            tracks.append({
-                                'name': name,
-                                'artist': artist,
-                                'image': track.get('image', ''),
-                            })
-                if tracks:
-                    return tracks, None
-            except Exception as e:
-                print(f"Error: {e}")
+                            tracks.append({'name': name, 'artist': artist, 'image': track.get('image','')})
+            except:
+                pass
+        
+        # Method 2: Next.js data
         if not tracks:
-            return None, "Could not extract tracks. Playlist may be private."
+            next_data = soup.find('script', id='__NEXT_DATA__')
+            if next_data:
+                try:
+                    data = json.loads(next_data.string)
+                    items = data['props']['pageProps']['state']['data']['entity']['trackList']
+                    for item in items:
+                        tracks.append({
+                            'name': item.get('title',''),
+                            'artist': item.get('subtitle',''),
+                            'image': item.get('image','')
+                        })
+                except:
+                    pass
+
+        # Method 3: og:description meta tag parsing
+        if not tracks:
+            desc = soup.find('meta', property='og:description')
+            if desc:
+                return None, "Playlist is private or Spotify blocked scraping"
+
+        if not tracks:
+            return None, "Could not extract tracks"
+            
         return tracks, None
     except Exception as e:
         return None, str(e)
@@ -63,7 +77,7 @@ def index():
 def health():
     return jsonify({"status": "ok"})
 
-@app.route('/playlist')
+@app.route('/playlist', methods=['GET'])
 def get_playlist():
     url = request.args.get('url', '').strip()
     if not url:
@@ -71,12 +85,15 @@ def get_playlist():
     if 'spotify.com/playlist/' not in url:
         return jsonify({"success": False, "error": "Invalid Spotify playlist URL"}), 400
     playlist_id = extract_playlist_id(url)
-    if not playlist_id:
-        return jsonify({"success": False, "error": "Could not extract playlist ID"}), 400
     tracks, error = scrape_spotify_playlist(url)
     if error:
         return jsonify({"success": False, "error": error}), 500
-    return jsonify({"success": True, "playlist_id": playlist_id, "total_tracks": len(tracks), "tracks": tracks})
+    return jsonify({
+        "success": True,
+        "playlist_id": playlist_id,
+        "total_tracks": len(tracks),
+        "tracks": tracks
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
