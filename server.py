@@ -156,5 +156,155 @@ def get_playlist():
         "tracks": results
     })
 
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+def get_spotify_token():
+    try:
+        response = requests.get(
+            'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+                'Referer': 'https://open.spotify.com/',
+                'spotify-app-version': '1.2.30.1135',
+                'app-platform': 'WebPlayer'
+            },
+            timeout=5
+        )
+        if response.status_code == 200:
+            return response.json().get('accessToken')
+    except Exception as e:
+        print(f"Error getting Spotify token: {e}")
+    return None
+
+def fetch_spotify_tracks_api(playlist_id, token):
+    tracks = []
+    offset = 0
+    limit = 100
+    while True:
+        try:
+            response = requests.get(
+                f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks?offset={offset}&limit={limit}&fields=items(track(name,id,artists(name),album(images))),next&market=IN',
+                headers={
+                    'Authorization': f'Bearer {token}',
+                    'User-Agent': 'Mozilla/5.0'
+                },
+                timeout=5
+            )
+            if response.status_code != 200:
+                break
+            data = response.json()
+            items = data.get('items', [])
+            if not items:
+                break
+            for item in items:
+                track_data = item.get('track')
+                if not track_data:
+                    continue
+                name = (track_data.get('name') or '').strip()
+                artists = track_data.get('artists', [])
+                artist = artists[0].get('name', '').strip() if artists else 'Unknown Artist'
+                images = track_data.get('album', {}).get('images', [])
+                image = images[0].get('url', '') if images else ''
+                track_id = track_data.get('id', '')
+                
+                if name:
+                    tracks.append({
+                        "id": track_id if track_id else str(hash(f"{name}_{artist}")),
+                        "name": name,
+                        "artist": artist,
+                        "image": image
+                    })
+            if not data.get('next'):
+                break
+            offset += limit
+        except Exception as e:
+            print(f"Error fetching API tracks: {e}")
+            break
+    return tracks
+
+@app.route('/spotify-playlist', methods=['GET'])
+def get_spotify_playlist():
+    url = request.args.get('url', '').strip()
+    if not url:
+        return jsonify({"success": False, "error": "Missing URL"}), 400
+    
+    playlist_id = None
+    match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
+    if match:
+        playlist_id = match.group(1)
+        
+    if not playlist_id:
+        return jsonify({"success": False, "error": "Invalid Spotify playlist URL"}), 400
+        
+    # 1. Try Web API first using anonymous token
+    token = get_spotify_token()
+    if token:
+        tracks = fetch_spotify_tracks_api(playlist_id, token)
+        if tracks:
+            return jsonify({
+                "success": True,
+                "name": "Spotify Playlist",
+                "tracks": tracks
+            })
+            
+    # 2. Try Embed scraping as a fallback
+    try:
+        query_params = ""
+        if '?' in url:
+            query_params = url[url.index('?'):]
+            
+        embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}{query_params}"
+        response = requests.get(
+            embed_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            html = response.text
+            match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+            if match_next:
+                data = json.loads(match_next.group(1))
+                entity = data.get('props', {}).get('pageProps', {}).get('state', {}).get('data', {}).get('entity', {})
+                playlist_name = entity.get('name', 'Spotify Playlist')
+                
+                track_list = entity.get('trackList', []) or entity.get('tracks', [])
+                
+                tracks = []
+                for item in track_list:
+                    name = (item.get('title') or item.get('name') or '').strip()
+                    artist = (item.get('subtitle') or item.get('artist') or 'Unknown Artist').strip()
+                    image = (item.get('image') or '')
+                    track_id = item.get('id', '')
+                    
+                    if name:
+                        tracks.append({
+                            "id": track_id if track_id else str(hash(f"{name}_{artist}")),
+                            "name": name,
+                            "artist": artist,
+                            "image": image
+                        })
+                        
+                if tracks:
+                    return jsonify({
+                        "success": True,
+                        "name": playlist_name,
+                        "tracks": tracks
+                    })
+                    
+        return jsonify({"success": False, "error": "No tracks found in the playlist metadata (Make sure it is public)"}), 404
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
