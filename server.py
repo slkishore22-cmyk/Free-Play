@@ -176,11 +176,11 @@ def scrape_spotify_embed_token(playlist_id):
                 track_cover = album.get("images")[0].get("url", "")
             
             tracks.append({
-                "id": track_id,
-                "name": track_name,
-                "artist": artist_name,
-                "image": track_cover,
-                "album": album.get("name", "") if album else ""
+                "id": track_id or '',
+                "name": track_name or 'Unknown',
+                "artist": artist_name or 'Unknown Artist',
+                "image": track_cover or '',
+                "album": (album.get("name") if album else "") or ''
             })
         
         # Follow pagination
@@ -205,11 +205,11 @@ def scrape_spotify_embed_token(playlist_id):
                     track_cover = album.get("images")[0].get("url", "")
                 
                 tracks.append({
-                    "id": track_id,
-                    "name": track_name,
-                    "artist": artist_name,
-                    "image": track_cover,
-                    "album": album.get("name", "") if album else ""
+                    "id": track_id or '',
+                    "name": track_name or 'Unknown',
+                    "artist": artist_name or 'Unknown Artist',
+                    "image": track_cover or '',
+                    "album": (album.get("name") if album else "") or ''
                 })
             next_url = page_data.get("next")
         
@@ -267,11 +267,11 @@ def scrape_spotify_playlist(playlist_url):
         
         tracks = []
         for item in raw_tracks:
-            track_id = item.get('uri', '').split(':')[-1] if item.get('uri') else ''
+            track_id = (item.get('uri', '').split(':')[-1] if item.get('uri') else '') or ''
             tracks.append({
-                'name': item.get('title', ''),
-                'artist': item.get('subtitle', ''),
-                'image': playlist_cover,
+                'name': item.get('title', '') or 'Unknown',
+                'artist': item.get('subtitle', '') or 'Unknown Artist',
+                'image': playlist_cover or '',
                 'id': track_id
             })
             
@@ -350,11 +350,11 @@ def fetch_playlist_with_keys(playlist_id, client_id, client_secret):
                     track_cover = album.get("images")[0].get("url", "")
                     
                 tracks.append({
-                    "id": track_id,
-                    "name": track_name,
-                    "artist": artist_name,
-                    "image": track_cover,
-                    "album": album.get("name", "")
+                    "id": track_id or '',
+                    "name": track_name or 'Unknown',
+                    "artist": artist_name or 'Unknown Artist',
+                    "image": track_cover or '',
+                    "album": (album.get("name") if album else "") or ''
                 })
                 
             tracks_url = data.get("next")
@@ -419,15 +419,16 @@ def get_playlist_tracks(playlist_id):
                 break
             
             for item in items:
-                name = item.get('title', '').strip()
-                artist = item.get('artists', '').strip()
-                if name:  # only add if track has a name
-                    tracks.append({
-                        'name': name,
-                        'artist': artist,
-                        'image': item.get('cover', ''),
-                        'id': item.get('id', '')
-                    })
+                name = item.get('title', '') or 'Unknown'
+                artist = item.get('artists', '') or 'Unknown Artist'
+                image = item.get('cover', '') or ''
+                track_id = item.get('id', '') or ''
+                tracks.append({
+                    'name': name,
+                    'artist': artist,
+                    'image': image,
+                    'id': track_id
+                })
             
             # Get next page offset
             next_offset = data.get('nextOffset')
@@ -512,15 +513,16 @@ def get_playlist():
             if data.get('success'):
                 items = data.get('trackList', [])
                 for item in items:
-                    name = item.get('title', '').strip()
-                    artist = item.get('artists', '').strip()
-                    if name:
-                        tracks.append({
-                            'name': name,
-                            'artist': artist,
-                            'image': item.get('cover', ''),
-                            'id': item.get('id', '')
-                        })
+                    name = item.get('title', '') or 'Unknown'
+                    artist = item.get('artists', '') or 'Unknown Artist'
+                    image = item.get('cover', '') or ''
+                    track_id = item.get('id', '') or ''
+                    tracks.append({
+                        'name': name,
+                        'artist': artist,
+                        'image': image,
+                        'id': track_id
+                    })
                 next_offset = data.get('nextOffset')
                 spotifydown_success = True
         except Exception as e:
