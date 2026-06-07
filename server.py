@@ -494,7 +494,7 @@ def get_playlist():
         # Scrape metadata
         playlist_name, playlist_desc, playlist_cover = scrape_spotify_playlist_metadata(playlist_id)
         
-        # Fetch page of tracks from spotifydown
+        # Try Strategy A: Fetch page of tracks from spotifydown
         headers = {
             "User-Agent": "Mozilla/5.0",
             "origin": "https://spotifydown.com",
@@ -503,6 +503,7 @@ def get_playlist():
         
         tracks = []
         next_offset = None
+        spotifydown_success = False
         try:
             api_url = f"https://api.spotifydown.com/trackList/playlist/{playlist_id}?offset={offset}"
             response = requests.get(api_url, headers=headers, timeout=15)
@@ -521,8 +522,36 @@ def get_playlist():
                             'id': item.get('id', '')
                         })
                 next_offset = data.get('nextOffset')
+                spotifydown_success = True
         except Exception as e:
             print(f"Error fetching offset {offset} from spotifydown: {e}")
+            
+        # Try Strategy B (Resilient Fallback): If spotifydown failed or returned empty tracks,
+        # use the embed token / classic embed scraper to fetch all tracks, then slice them!
+        if not spotifydown_success or not tracks:
+            print(f"[Fallback] spotifydown failed or returned empty. Slicing from embed token/classic scrape.")
+            result = None
+            
+            # Try Strategy 2: Embed page accessToken scrape
+            result, error = scrape_spotify_embed_token(playlist_id)
+            
+            # Try Strategy 3: Classic embed scrape
+            if not result:
+                result, error = scrape_spotify_playlist(url)
+                
+            if result and result.get('tracks'):
+                all_tracks = result['tracks']
+                playlist_name = result.get('name') or playlist_name
+                playlist_desc = result.get('description') or playlist_desc
+                playlist_cover = result.get('cover') or playlist_cover
+                
+                # Slice tracks for the requested offset
+                limit = 50
+                tracks = all_tracks[offset : offset + limit]
+                if offset + limit < len(all_tracks):
+                    next_offset = offset + limit
+                else:
+                    next_offset = None
             
         # Concurrently resolve JioSaavn audio streams for this page
         resolved_tracks = []
