@@ -368,6 +368,84 @@ def fetch_playlist_with_keys(playlist_id, client_id, client_secret):
     except Exception as e:
         return None, str(e)
 
+def scrape_spotify_playlist_metadata(playlist_id):
+    try:
+        embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://open.spotify.com/"
+        }
+        
+        response = requests.get(embed_url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            next_data_script = soup.find('script', id='__NEXT_DATA__')
+            if next_data_script:
+                data = json.loads(next_data_script.string)
+                state = data.get('props', {}).get('pageProps', {}).get('state', {})
+                entity = state.get('data', {}).get('entity', {})
+                if entity:
+                    playlist_name = entity.get('name') or entity.get('title') or 'Imported Playlist'
+                    playlist_desc = entity.get('subtitle') or ''
+                    playlist_cover = entity.get('coverArt', {}).get('sources', [{}])[0].get('url', '')
+                    return playlist_name, playlist_desc, playlist_cover
+    except Exception as e:
+        print(f"Error scraping metadata: {e}")
+    return "Imported Playlist", "", ""
+
+def get_playlist_tracks(playlist_id):
+    tracks = []
+    offset = 0
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "origin": "https://spotifydown.com",
+        "referer": "https://spotifydown.com/",
+    }
+    
+    while True:
+        try:
+            url = f"https://api.spotifydown.com/trackList/playlist/{playlist_id}?offset={offset}"
+            response = requests.get(url, headers=headers, timeout=15)
+            data = response.json()
+            
+            if not data.get('success'):
+                break
+            
+            items = data.get('trackList', [])
+            if not items:
+                break
+            
+            for item in items:
+                name = item.get('title', '').strip()
+                artist = item.get('artists', '').strip()
+                if name:  # only add if track has a name
+                    tracks.append({
+                        'name': name,
+                        'artist': artist,
+                        'image': item.get('cover', ''),
+                        'id': item.get('id', '')
+                    })
+            
+            # Get next page offset
+            next_offset = data.get('nextOffset')
+            
+            # Stop if no more pages
+            if next_offset is None or next_offset == offset:
+                break
+                
+            offset = next_offset
+            print(f"Fetched {len(tracks)} tracks so far, getting offset {offset}...")
+            
+        except Exception as e:
+            print(f"Error at offset {offset}: {e}")
+            break
+    
+    print(f"Total tracks fetched: {len(tracks)}")
+    return tracks
+
 @app.route('/')
 def index():
     return jsonify({"service": "FreePlay Spotify Scraper", "status": "running"})
@@ -403,6 +481,67 @@ def get_playlist():
     if not playlist_id:
         return jsonify({"success": False, "error": "Invalid playlist URL"}), 400
     
+    offset_param = request.args.get('offset')
+    
+    if offset_param is not None:
+        try:
+            offset = int(offset_param)
+        except ValueError:
+            offset = 0
+            
+        print(f"Fetching paginated playlist {playlist_id} at offset {offset}")
+        
+        # Scrape metadata
+        playlist_name, playlist_desc, playlist_cover = scrape_spotify_playlist_metadata(playlist_id)
+        
+        # Fetch page of tracks from spotifydown
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "origin": "https://spotifydown.com",
+            "referer": "https://spotifydown.com/",
+        }
+        
+        tracks = []
+        next_offset = None
+        try:
+            api_url = f"https://api.spotifydown.com/trackList/playlist/{playlist_id}?offset={offset}"
+            response = requests.get(api_url, headers=headers, timeout=15)
+            data = response.json()
+            
+            if data.get('success'):
+                items = data.get('trackList', [])
+                for item in items:
+                    name = item.get('title', '').strip()
+                    artist = item.get('artists', '').strip()
+                    if name:
+                        tracks.append({
+                            'name': name,
+                            'artist': artist,
+                            'image': item.get('cover', ''),
+                            'id': item.get('id', '')
+                        })
+                next_offset = data.get('nextOffset')
+        except Exception as e:
+            print(f"Error fetching offset {offset} from spotifydown: {e}")
+            
+        # Concurrently resolve JioSaavn audio streams for this page
+        resolved_tracks = []
+        if tracks:
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                resolved_tracks = list(executor.map(resolve_jiosaavn_track, tracks))
+                
+        return jsonify({
+            "success": True,
+            "playlist_id": playlist_id,
+            "name": playlist_name,
+            "description": playlist_desc,
+            "cover": playlist_cover,
+            "total_tracks": len(resolved_tracks),
+            "resolved_count": len([t for t in resolved_tracks if t.get('streamUrl')]),
+            "tracks": resolved_tracks,
+            "nextOffset": next_offset
+        })
+
     # Priority 1: Client-provided credentials
     client_id = request.headers.get('x-spotify-client-id', '').strip()
     client_secret = request.headers.get('x-spotify-client-secret', '').strip()
@@ -433,6 +572,21 @@ def get_playlist():
     if not result:
         print(f"[Strategy 3] Using classic embed scrape for playlist {playlist_id}")
         result, error = scrape_spotify_playlist(url)
+        if result:
+            error = None
+
+    # Strategy 4: spotifydown loop fallback
+    if not result:
+        print(f"[Strategy 4] Using spotifydown scraper for playlist {playlist_id}")
+        tracks = get_playlist_tracks(playlist_id)
+        if tracks:
+            playlist_name, playlist_desc, playlist_cover = scrape_spotify_playlist_metadata(playlist_id)
+            result = {
+                'tracks': tracks,
+                'name': playlist_name,
+                'description': playlist_desc,
+                'cover': playlist_cover
+            }
         
     if error or not result:
         return jsonify({"success": False, "error": error or "Could not fetch playlist"}), 500
@@ -470,3 +624,4 @@ def get_playlist():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
+
