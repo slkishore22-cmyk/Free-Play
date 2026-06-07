@@ -527,16 +527,33 @@ def get_playlist():
             print(f"Error fetching offset {offset} from spotifydown: {e}")
             
         # Try Strategy B (Resilient Fallback): If spotifydown failed or returned empty tracks,
-        # use the embed token / classic embed scraper to fetch all tracks, then slice them!
+        # use official Spotify API / embed token / classic embed scraper to fetch all tracks, then slice them!
         if not spotifydown_success or not tracks:
-            print(f"[Fallback] spotifydown failed or returned empty. Slicing from embed token/classic scrape.")
+            print(f"[Fallback] spotifydown failed or returned empty. Slicing from official API/embed token/classic scrape.")
             result = None
             
-            # Try Strategy 2: Embed page accessToken scrape
-            result, error = scrape_spotify_embed_token(playlist_id)
+            # Priority 1: Client-provided credentials
+            client_id = request.headers.get('x-spotify-client-id', '').strip()
+            client_secret = request.headers.get('x-spotify-client-secret', '').strip()
             
-            # Try Strategy 3: Classic embed scrape
+            # Priority 2: Server-side environment variable credentials
+            if not client_id or not client_secret:
+                client_id = ENV_SPOTIFY_CLIENT_ID
+                client_secret = ENV_SPOTIFY_CLIENT_SECRET
+                
+            # Strategy 1: Official Spotify API (if we have credentials)
+            if client_id and client_secret:
+                print(f"[Strategy 1 Fallback] Using official Spotify API for playlist {playlist_id}")
+                result, error = fetch_playlist_with_keys(playlist_id, client_id, client_secret)
+                
+            # Strategy 2: Embed page accessToken scrape
             if not result:
+                print(f"[Strategy 2 Fallback] Using embed token scrape for playlist {playlist_id}")
+                result, error = scrape_spotify_embed_token(playlist_id)
+                
+            # Strategy 3: Classic embed scrape
+            if not result:
+                print(f"[Strategy 3 Fallback] Using classic embed scrape for playlist {playlist_id}")
                 result, error = scrape_spotify_playlist(url)
                 
             if result and result.get('tracks'):
