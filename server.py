@@ -62,23 +62,23 @@ def search_track():
             return jsonify({"success": False, "error": "JioSaavn search failed"}), 500
         
         results = data.get('results', [])
-        if not results:
-            return jsonify({"success": False, "error": "No results found"}), 404
-        
-        top = results[0]
-        encrypted_url = top.get('more_info', {}).get('encrypted_media_url', '')
-        
-        stream_url = None
-        if encrypted_url:
-            stream_url = decrypt_jiosaavn_url(encrypted_url)
+        import html
+        formatted_results = []
+        for item in results[:10]: # Return top 10 results
+            encrypted_url = item.get('encrypted_media_url', '') or item.get('encrypted_drm_media_url', '')
+            stream_url = decrypt_jiosaavn_url(encrypted_url) if encrypted_url else None
+            formatted_results.append({
+                "id": item.get('id', ''),
+                "name": html.unescape(item.get('song', '')),
+                "artist": html.unescape(item.get('singers', '') or item.get('primary_artists', '')),
+                "image": item.get('image', '').replace('150x150', '500x500'),
+                "stream_url": stream_url,
+                "duration": item.get('duration', '0')
+            })
         
         return jsonify({
             "success": True,
-            "name": top.get('title', ''),
-            "artist": top.get('subtitle', ''),
-            "image": top.get('image', '').replace('150x150', '500x500'),
-            "stream_url": stream_url,
-            "duration": top.get('more_info', {}).get('duration', '0')
+            "results": formatted_results
         })
         
     except Exception as e:
@@ -96,20 +96,21 @@ def get_playlist():
     track_names = [t.strip() for t in tracks_param.split(',') if t.strip()]
     
     results = []
+    import html
     for track_name in track_names[:50]:  # limit to 50 at a time
         try:
             data = get_jiosaavn_search(track_name)
             if data and data.get('results'):
                 top = data['results'][0]
-                encrypted_url = top.get('more_info', {}).get('encrypted_media_url', '')
+                encrypted_url = top.get('encrypted_media_url', '') or top.get('encrypted_drm_media_url', '')
                 stream_url = decrypt_jiosaavn_url(encrypted_url) if encrypted_url else None
                 results.append({
                     "query": track_name,
-                    "name": top.get('title', ''),
-                    "artist": top.get('subtitle', ''),
+                    "name": html.unescape(top.get('song', '')),
+                    "artist": html.unescape(top.get('singers', '') or top.get('primary_artists', '')),
                     "image": top.get('image', '').replace('150x150', '500x500'),
                     "stream_url": stream_url,
-                    "duration": top.get('more_info', {}).get('duration', '0')
+                    "duration": top.get('duration', '0')
                 })
         except:
             continue
