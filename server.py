@@ -72,15 +72,31 @@ def search_track():
         import html
         formatted_results = []
         for item in results[:10]: # Return top 10 results
-            encrypted_url = item.get('encrypted_media_url', '') or item.get('encrypted_drm_media_url', '')
+            encrypted_url = (
+                item.get('more_info', {}).get('encrypted_media_url') or
+                item.get('more_info', {}).get('encryptedMediaUrl') or
+                item.get('encrypted_media_url') or
+                item.get('encrypted_drm_media_url') or
+                ''
+            )
+            print(f"Raw item: {json.dumps(item)[:500]}")
+            print(f"Encrypted URL found: {bool(encrypted_url)}")
+            print(f"Encrypted URL value: {encrypted_url[:50] if encrypted_url else 'NONE'}")
+            
             stream_url = decrypt_jiosaavn_url(encrypted_url) if encrypted_url else None
+            
+            name = item.get('title', '') or item.get('song', '') or ''
+            artist = item.get('subtitle', '') or item.get('primary_artists', '') or ''
+            image = item.get('image', '') or item.get('more_info', {}).get('square_image', '') or ''
+            image = image.replace('150x150', '500x500')
+            
             formatted_results.append({
                 "id": item.get('id', ''),
-                "name": html.unescape(item.get('song', '')),
-                "artist": html.unescape(item.get('singers', '') or item.get('primary_artists', '')),
-                "image": item.get('image', '').replace('150x150', '500x500'),
+                "name": html.unescape(name),
+                "artist": html.unescape(artist),
+                "image": image,
                 "stream_url": stream_url,
-                "duration": item.get('duration', '0')
+                "duration": item.get('duration', '') or item.get('more_info', {}).get('duration', '0')
             })
         
         return jsonify({
@@ -108,16 +124,28 @@ def get_playlist():
         try:
             data = get_jiosaavn_search(track_name)
             if data and data.get('results'):
-                top = data['results'][0]
-                encrypted_url = top.get('encrypted_media_url', '') or top.get('encrypted_drm_media_url', '')
+                item = data['results'][0]
+                encrypted_url = (
+                    item.get('more_info', {}).get('encrypted_media_url') or
+                    item.get('more_info', {}).get('encryptedMediaUrl') or
+                    item.get('encrypted_media_url') or
+                    item.get('encrypted_drm_media_url') or
+                    ''
+                )
                 stream_url = decrypt_jiosaavn_url(encrypted_url) if encrypted_url else None
+                
+                name = item.get('title', '') or item.get('song', '') or ''
+                artist = item.get('subtitle', '') or item.get('primary_artists', '') or ''
+                image = item.get('image', '') or item.get('more_info', {}).get('square_image', '') or ''
+                image = image.replace('150x150', '500x500')
+                
                 results.append({
                     "query": track_name,
-                    "name": html.unescape(top.get('song', '')),
-                    "artist": html.unescape(top.get('singers', '') or top.get('primary_artists', '')),
-                    "image": top.get('image', '').replace('150x150', '500x500'),
+                    "name": html.unescape(name),
+                    "artist": html.unescape(artist),
+                    "image": image,
                     "stream_url": stream_url,
-                    "duration": top.get('duration', '0')
+                    "duration": item.get('duration', '') or item.get('more_info', {}).get('duration', '0')
                 })
         except:
             continue
