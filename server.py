@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 import requests
 import re
 import json
+import cloudscraper
 
 app = Flask(__name__)
 
@@ -165,7 +166,8 @@ def after_request(response):
 
 def get_spotify_token():
     try:
-        response = requests.get(
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(
             'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -186,9 +188,10 @@ def fetch_spotify_tracks_api(playlist_id, token):
     tracks = []
     offset = 0
     limit = 100
+    scraper = cloudscraper.create_scraper()
     while True:
         try:
-            response = requests.get(
+            response = scraper.get(
                 f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks?offset={offset}&limit={limit}&fields=items(track(name,id,artists(name),album(images))),next&market=IN',
                 headers={
                     'Authorization': f'Bearer {token}',
@@ -260,7 +263,8 @@ def get_spotify_playlist():
             query_params = url[url.index('?'):]
             
         embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}{query_params}"
-        response = requests.get(
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(
             embed_url,
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
