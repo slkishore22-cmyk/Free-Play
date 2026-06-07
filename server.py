@@ -231,6 +231,36 @@ def fetch_spotify_tracks_api(playlist_id, token):
             break
     return tracks
 
+@app.route('/test-spotify', methods=['GET'])
+def test_spotify():
+    playlist_id = '37i9dQZF1DWXRqP4y8JdFk'
+    
+    token = get_spotify_token()
+    token_status = "SUCCESS" if token else "FAILED"
+    
+    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+    scraper = cloudscraper.create_scraper()
+    response = scraper.get(
+        embed_url,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        timeout=10
+    )
+    
+    html = response.text
+    match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+    
+    return jsonify({
+        "token_status": token_status,
+        "token_preview": token[:20] if token else "NONE",
+        "embed_status_code": response.status_code,
+        "embed_html_length": len(html),
+        "next_data_found": bool(match_next),
+        "html_preview": html[:500]
+    })
+
 @app.route('/spotify-playlist', methods=['GET'])
 def get_spotify_playlist():
     url = request.args.get('url', '').strip()
