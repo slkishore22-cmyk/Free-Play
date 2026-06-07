@@ -3,6 +3,8 @@ import requests
 import re
 import json
 import cloudscraper
+import os
+import base64
 
 app = Flask(__name__)
 
@@ -165,6 +167,30 @@ def after_request(response):
     return response
 
 def get_spotify_token():
+    # 1. Try official credentials if provided in env
+    client_id = os.environ.get('SPOTIFY_CLIENT_ID')
+    client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if client_id and client_secret:
+        try:
+            auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+            response = requests.post(
+                'https://accounts.spotify.com/api/token',
+                data={'grant_type': 'client_credentials'},
+                headers={
+                    'Authorization': f'Basic {auth_header}',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                timeout=5
+            )
+            if response.status_code == 200:
+                token = response.json().get('access_token')
+                if token:
+                    print("Successfully fetched official Spotify API token.")
+                    return token
+        except Exception as e:
+            print(f"Error getting official Spotify token: {e}")
+
+    # 2. Fallback to anonymous web player token
     try:
         scraper = cloudscraper.create_scraper()
         response = scraper.get(
