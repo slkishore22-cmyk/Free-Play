@@ -252,13 +252,38 @@ def test_spotify():
     html = response.text
     match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
     
+    tracks_preview = []
+    keys_found = []
+    status = None
+    title = None
+    tracks_count = 0
+    
+    if match_next:
+        data = json.loads(match_next.group(1))
+        pageProps = data.get('props', {}).get('pageProps', {})
+        status = pageProps.get('status')
+        title = pageProps.get('title')
+        
+        entity = pageProps.get('state', {}).get('data', {}).get('entity', {})
+        keys_found = list(entity.keys())
+        
+        track_list = entity.get('trackList', []) or entity.get('tracks', [])
+        tracks_count = len(track_list)
+        for item in track_list[:5]:
+            tracks_preview.append({
+                "title": item.get('title') or item.get('name'),
+                "subtitle": item.get('subtitle') or item.get('artist')
+            })
+            
     return jsonify({
         "token_status": token_status,
-        "token_preview": token[:20] if token else "NONE",
         "embed_status_code": response.status_code,
-        "embed_html_length": len(html),
         "next_data_found": bool(match_next),
-        "html_preview": html[:500]
+        "props_status": status,
+        "props_title": title,
+        "entity_keys": keys_found,
+        "tracks_preview": tracks_preview,
+        "tracks_count": tracks_count
     })
 
 @app.route('/spotify-playlist', methods=['GET'])
