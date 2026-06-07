@@ -481,5 +481,27 @@ def import_playlist():
         "tracks": tracks
     })
 
+@app.route('/debug', methods=['GET'])
+def debug_spotify():
+    try:
+        res = requests.get(
+            'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': 'https://open.spotify.com/',
+                'Accept': 'application/json',
+                'app-platform': 'WebPlayer',
+                'spotify-app-version': '1.2.30.1135.g1c8a6e38',
+            },
+            timeout=10
+        )
+        return jsonify({
+            "status_code": res.status_code,
+            "headers": dict(res.headers),
+            "body": res.text[:500]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
