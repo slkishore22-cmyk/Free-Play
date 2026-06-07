@@ -34,6 +34,13 @@ def decrypt_jiosaavn_url(encrypted_url):
         enc = base64.b64decode(encrypted_url.encode())
         cipher = DES.new(key, DES.MODE_ECB)
         decrypted = cipher.decrypt(enc)
+        
+        # PKCS5/7 padding stripping
+        if decrypted:
+            pad_len = decrypted[-1]
+            if 1 <= pad_len <= 8:
+                decrypted = decrypted[:-pad_len]
+                
         url = decrypted.decode('utf-8').strip()
         url = url.replace('_96.mp4', '_320.mp4')
         url = url.replace('_160.mp4', '_320.mp4')
